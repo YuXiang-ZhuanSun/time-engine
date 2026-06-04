@@ -9,9 +9,15 @@ using namespace ca::sim;
 
 namespace {
 
-// demo 用的最小 trace sink。
-// 它记录事件被安排和执行的时刻，帮助用户从输出里还原事件因果链。
-class PrintingTrace : public TraceSink {
+// 先读 main()，再回来看这个类。
+//
+// trace 的意思是“事件流水账”：
+//   - 某个事件什么时候被 schedule
+//   - 某个事件什么时候真正 execute
+//
+// 它不是芯片模型的一部分，也不决定仿真结果。
+// 它只是把 TimeEngine 内部发生的事情记下来，方便用户调试时间线。
+class EventTraceLog : public TraceSink {
 public:
     void onScheduled(const EventView& event) override {
         lines.push_back("schedule T=" + std::to_string(event.time) + " phase=" + phaseName(event.phase) +
@@ -29,7 +35,9 @@ public:
 } // namespace
 
 int main() {
-    PrintingTrace trace;
+    // EventTraceLog 只是调试日志。把它传给 TimeEngine 后，
+    // TimeEngine 每次 schedule/execute 事件时都会通知它。
+    EventTraceLog trace;
     TimeEngine engine(&trace);
 
     // demo 假设 CPU clock 是 1 GHz，也就是 1000 ps / cycle。
@@ -77,6 +85,8 @@ int main() {
     // run 会一直执行事件，直到没有未来事件。
     engine.run();
 
+    // 打印事件流水账。第一次读 demo 时，可以先跳过这段；
+    // 它只是解释“为什么事件按这个时间线发生”。
     std::cout << "\nEvent trace:\n";
     for (const auto& line : trace.lines) {
         std::cout << "  " << line << "\n";

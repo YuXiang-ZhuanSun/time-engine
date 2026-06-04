@@ -1,4 +1,4 @@
-# 05. 用户说明书：开发芯片时序模型
+﻿# 05. 用户说明书：开发芯片时序模型
 
 这份说明书面向 Time Engine 的使用者。目标不是讲抽象架构，而是让你读完后能开始写自己的芯片时序模型。
 
@@ -31,7 +31,8 @@
   一个会被请求占用一段时间的东西，例如 cache port、NoC link、DRAM port。
 
 trace:
-  事件发生过程的记录，用来解释仿真为什么这样执行。
+  事件发生过程的流水账，用来解释仿真为什么这样执行。
+  它不是芯片模型逻辑，只是调试日志。
 
 stats:
   性能统计，例如 latency、请求数、排队等待时间。
@@ -40,13 +41,121 @@ stats:
 这份说明书的阅读方式是：
 
 ```text
-先理解概念
-再看 API
+先看这些对象如何合作
+再理解概念和 API
 再看组件模板
 最后照着 demo 写自己的模型
 ```
 
-## 1. Time Engine 是什么
+## 1. 先看这些东西如何合作
+
+如果一上来就看二十个接口，会很难记住它们各自干什么。先看一张协作图。
+
+![Time Engine 对象协作图](assets/time-engine-collaboration.png)
+
+```text
+你的芯片模型代码
+  +-- 创建 TimeEngine
+  +-- 创建 ClockDomain
+  +-- 创建 TimedResource
+  +-- 创建初始请求
+  |
+  v
+TimeEngine
+  +-- scheduleAt / scheduleAfter / scheduleCycles
+  +-- 把未来动作放进 EventQueue
+  +-- run() 时按时间顺序执行 callback
+  |
+  v
+callback
+  +-- 回到你的组件模型
+  +-- 组件判断 hit / miss / stall / wakeup
+  +-- 组件继续 schedule 下一个未来动作
+  |
+  v
+TraceSink / stats
+  +-- 记录事件流水账
+  +-- 统计 latency、请求数、排队等待
+```
+
+用一句话说：
+
+```text
+组件决定“要发生什么”，TimeEngine 决定“什么时候发生”。
+```
+
+## 2. 一条 load 请求如何走完整条链路
+
+下面这条链路是当前 demo 的核心：
+
+![Mini memory system load 时间线](assets/mini-memory-timeline.png)
+
+```text
+Core 发起 load
+  -> L1 固定 miss
+    -> 4 个 CPU cycle 后访问 L2
+      -> L2 固定 miss
+        -> 8 个 CPU cycle 后访问 DRAM
+          -> DRAM port service 50000 ps
+            -> Core wakeup
+```
+
+它背后的接口合作关系是：
+
+```text
+1. ClockDomain cpu("cpu", 1000)
+   +-- 定义 CPU 一个 cycle 是 1000 ps
+
+2. TimeEngine engine(&trace)
+   +-- 创建时间内核，并挂上可选 trace 日志
+
+3. TimedResource dramPort("dram-port", 50000)
+   +-- 表达 DRAM port 一次 service 要 50000 ps
+
+4. engine.scheduleAt(0, Phase::Input, accessL1, ..., "core-load")
+   +-- 把初始 load 请求放到 T=0
+
+5. accessL1 callback 执行
+   +-- 这是你的 L1 模型逻辑
+   +-- 它调用 scheduleCycles(cpu, 4, ..., accessL2)
+
+6. accessL2 callback 执行
+   +-- 这是你的 L2 模型逻辑
+   +-- 它调用 scheduleCycles(cpu, 8, ..., accessDram)
+
+7. accessDram callback 执行
+   +-- 这是你的 DRAM 入口逻辑
+   +-- 它调用 dramPort.request(...)
+
+8. TimedResource 内部调用 engine.scheduleAt(completion, ..., wakeCore)
+   +-- 资源 service 完成后，安排 Core wakeup
+
+9. wakeCore callback 执行
+   +-- 请求完成，计算 latency
+```
+
+所以这些接口不是散的：
+
+```text
+ClockDomain
+  +-- 帮 scheduleCycles 把 cycle 转成 SimTime
+
+TimeEngine
+  +-- 保存和执行未来 callback
+
+TimedResource
+  +-- 用 TimeEngine 安排资源完成事件
+
+TraceSink
+  +-- 观察 TimeEngine 的 schedule / execute，不参与模型决策
+
+stats
+  +-- 你的模型在请求开始和完成时自己统计
+```
+
+读后面的 API 时，请一直把这条链路放在脑子里。
+
+## 3. Time Engine 是什么
 
 Time Engine 是一个**离散事件时序内核**。
 
@@ -85,9 +194,9 @@ callback 执行后，可以继续安排新的未来事件。
 
 Time Engine 的工作就是保存这些事件，按正确顺序执行它们，并把当前仿真时间推进到事件发生的时间。
 
-## 2. Time Engine 的设计思想
+## 4. Time Engine 的设计思想
 
-### 2.1 时间不连续流动，而是跳到下一个事件
+### 4.1 时间不连续流动，而是跳到下一个事件
 
 普通逐周期仿真可能会这样写：
 
@@ -109,7 +218,7 @@ TimeEngine 不会逐 ps 或逐 cycle 扫描，
 
 这适合芯片性能仿真，因为性能模型通常关心请求、延迟、资源竞争和返回时间，而不是每根信号线每个周期的值。
 
-### 2.2 时间内核和硬件策略分离
+### 4.2 时间内核和硬件策略分离
 
 Time Engine 负责：
 
@@ -133,7 +242,7 @@ Core 是否 stall？
 
 这个边界非常重要。Time Engine 不应该知道什么是 cache miss；cache 模型也不应该直接操作 EventQueue。
 
-## 3. Time Engine 的内部结构
+## 5. Time Engine 的内部结构
 
 这一节会出现 `EventQueue`、`pending_` 和 `sequence`。先解释一下。
 
@@ -212,9 +321,9 @@ src/time_engine/time_engine.hpp
 src/time_engine/time_engine.cpp
 ```
 
-## 4. 关键类型
+## 6. 关键类型
 
-### 4.1 `SimTime`
+### 6.1 `SimTime`
 
 ```cpp
 using SimTime = std::uint64_t;
@@ -242,7 +351,7 @@ DRAM: 800 MHz -> 1 cycle = 1250 ps
 
 最终所有事件都要放到同一条时间线上排序，所以 TimeEngine 使用统一的 `SimTime`。
 
-### 4.2 `Duration`
+### 6.2 `Duration`
 
 ```cpp
 using Duration = std::uint64_t;
@@ -258,7 +367,7 @@ engine.scheduleAfter(200, Phase::Update, callback);
 
 表示从当前 `now()` 开始，200 ps 后执行 callback。
 
-### 4.3 `EventId`
+### 6.3 `EventId`
 
 ```cpp
 using EventId = std::uint64_t;
@@ -281,7 +390,7 @@ EventId id = engine.scheduleAt(1000, Phase::Update, callback);
 engine.cancel(id);
 ```
 
-### 4.4 `Callback`
+### 6.4 `Callback`
 
 ```cpp
 using Callback = std::function<void()>;
@@ -306,7 +415,7 @@ callback 不应该：
 依赖不稳定的外部对象生命周期
 ```
 
-## 5. `ClockDomain` 是什么
+## 7. `ClockDomain` 是什么
 
 先解释“时钟域”。
 
@@ -340,7 +449,7 @@ DRAM command 延迟是若干 DRAM cycle
 把某个时钟域里的 cycle 数转换成全局 SimTime。
 ```
 
-## 6. `ClockDomain` 接口格式
+## 8. `ClockDomain` 接口格式
 
 当前接口：
 
@@ -356,7 +465,7 @@ public:
 };
 ```
 
-### 6.1 构造函数
+### 8.1 构造函数
 
 ```cpp
 ClockDomain cpu("cpu", 1000);
@@ -373,7 +482,7 @@ period = 1000 ps
 
 `period` 不能是 0。当前实现会在构造时检查，传 0 会抛出异常。
 
-### 6.2 `nextEdge(now)`
+### 8.2 `nextEdge(now)`
 
 ```cpp
 SimTime edge = cpu.nextEdge(2300);
@@ -392,7 +501,7 @@ SimTime edge = cpu.nextEdge(2300);
 nextEdge(3000) = 3000
 ```
 
-### 6.3 `cyclesFromNow(now, cycles)`
+### 8.3 `cyclesFromNow(now, cycles)`
 
 ```cpp
 SimTime t = cpu.cyclesFromNow(2300, 3);
@@ -416,7 +525,7 @@ t = 6000 ps
 
 这就是 `scheduleCycles` 背后的时间转换逻辑。
 
-## 7. `Phase` 是什么
+## 9. `Phase` 是什么
 
 先解释为什么需要它。
 
@@ -485,7 +594,7 @@ Trace:
 Input -> Compute -> Arbitrate -> Update -> Trace
 ```
 
-### 7.1 模型开发者应该怎么选 Phase
+### 9.1 模型开发者应该怎么选 Phase
 
 第一版请按下面这个简单规则用：
 
@@ -512,7 +621,7 @@ trace / stats 系统记录最终状态:
 
 `Compute` 和 `Arbitrate` 是后续更复杂模型使用的工具，不是 MVP 阶段的日常负担。
 
-### 7.2 Phase 不是 priority
+### 9.2 Phase 不是 priority
 
 `Phase` 解决的是“同一时间点内，不同类型动作的大顺序”。
 
@@ -533,7 +642,7 @@ trace / stats 系统记录最终状态:
   说明模型边界可能有问题，应该重新设计 phase 或资源仲裁逻辑
 ```
 
-## 8. 调度接口的共同含义
+## 10. 调度接口的共同含义
 
 先解释“调度”。
 
@@ -611,7 +720,7 @@ EventId
   +-- 也可以用于 trace/debug
 ```
 
-## 9. `scheduleAt` 的内涵
+## 11. `scheduleAt` 的内涵
 
 `scheduleAt` 用于**绝对时间调度**。
 
@@ -655,7 +764,7 @@ engine.scheduleAt(0, Phase::Input, [&] {
 如果 time < engine.now()，当前实现会抛出 std::invalid_argument。
 ```
 
-## 10. `scheduleAfter` 的内涵
+## 12. `scheduleAfter` 的内涵
 
 `scheduleAfter` 用于**相对时间调度**。
 
@@ -684,7 +793,7 @@ engine.scheduleAt(engine.now() + 200, Phase::Update, callback, 0, "link-arrive")
 已经用 ps 表达的 service time
 ```
 
-## 11. `scheduleCycles` 的内涵
+## 13. `scheduleCycles` 的内涵
 
 `scheduleCycles` 用于**按时钟域 cycle 调度**。
 
@@ -735,7 +844,7 @@ issue / writeback latency
 以 cycle 表达的 NoC hop latency
 ```
 
-## 12. `run` 和 `runUntil`
+## 14. `run` 和 `runUntil`
 
 ### `run`
 
@@ -778,7 +887,7 @@ engine.runUntil(100000);
 调试某个时间范围内的行为
 ```
 
-## 13. `cancel` 的内涵
+## 15. `cancel` 的内涵
 
 ```cpp
 EventId id = engine.scheduleAt(1000, Phase::Update, callback, 0, "speculative-event");
@@ -809,7 +918,7 @@ timeout 提前满足
 reset
 ```
 
-## 14. 最小使用流程
+## 16. 最小使用流程
 
 一个最小模型通常按这个顺序写：
 
@@ -857,7 +966,7 @@ T=4000:
   执行 finish-after-4-cycles
 ```
 
-## 15. 如何写一个芯片组件
+## 17. 如何写一个芯片组件
 
 当前 MVP 没有强制 `Component` 基类。推荐先写普通 C++ 类，把 `TimeEngine`、`ClockDomain` 和下游组件作为依赖传入。
 
@@ -895,7 +1004,7 @@ private:
 组件不要修改别的组件内部状态。
 ```
 
-## 16. 如何定义请求对象
+## 18. 如何定义请求对象
 
 随着模型变复杂，不要只传 address。建议定义请求对象。
 
@@ -934,7 +1043,7 @@ engine.scheduleCycles(clock, 4, Phase::Update, [this, request] {
 
 这样 callback 执行时 request 数据仍然有效。
 
-## 17. 如何表达资源占用
+## 19. 如何表达资源占用
 
 先解释“资源占用”。
 
@@ -990,7 +1099,19 @@ busyUntil
 简单 functional unit
 ```
 
-## 18. 如何写 trace
+## 20. 如何写 trace
+
+先把 trace 理解成“事件日志”。
+
+```text
+没有 trace:
+  你只知道最终 latency 是多少。
+
+有 trace:
+  你能看到每个事件什么时候被安排、什么时候被执行。
+```
+
+trace 不会改变仿真结果。它只是帮助你读懂时间线。
 
 继承 `TraceSink`：
 
@@ -1032,7 +1153,7 @@ engine.scheduleCycles(cpu, 4, Phase::Update, callback, 0, "l1-send-to-l2");
 它属于哪条请求路径？
 ```
 
-## 19. 如何写 stats
+## 21. 如何写 stats
 
 当前 MVP 没有统一 stats 框架。建议先在组件里维护少量直接统计。
 
@@ -1069,7 +1190,7 @@ queued requests
 total wait
 ```
 
-## 20. 推荐开发模板
+## 22. 推荐开发模板
 
 开发一个新组件时，可以按这个顺序：
 
@@ -1111,7 +1232,7 @@ private:
 };
 ```
 
-## 21. 常见建模模式
+## 23. 常见建模模式
 
 ### 固定延迟
 
@@ -1170,7 +1291,7 @@ speculative request 撤销
 timeout 提前满足
 ```
 
-## 22. 常见错误
+## 24. 常见错误
 
 ### 错误 1：组件直接改下游内部状态
 
@@ -1217,7 +1338,7 @@ TimeEngine 应该完全不知道这些概念。
 "dram-complete"
 ```
 
-## 23. 如何判断模型写得是否合理
+## 25. 如何判断模型写得是否合理
 
 一个好的时序模型应该满足：
 
@@ -1232,7 +1353,7 @@ demo 足够小，可以手算预期时间
 
 如果 demo 的时间线不能手算，说明模型可能已经太复杂，需要拆小。
 
-## 24. 当前最佳学习路径
+## 26. 当前最佳学习路径
 
 建议按这个顺序读：
 
