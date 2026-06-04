@@ -2,10 +2,16 @@
 
 CA Chip Simulation Engine 是一个精简的芯片性能仿真时序框架。
 
-当前版本先实现单线程离散事件 Time Engine，用一个 mini memory system demo 跑通：
+![Time Engine 顶层设计](docs/assets/overall-design.png)
+
+当前版本先实现单线程离散事件 Time Engine，并提供两个 memory demo 跑通：
 
 ```text
-Core -> L1 -> L2 -> DRAM -> Core wakeup
+mini_memory_system:
+  Core -> L1 -> L2 -> DRAM -> Core wakeup
+
+memory_hierarchy:
+  Core -> L1/L2 hit/miss -> DRAM bandwidth queue -> Core wakeup
 ```
 
 ## 仓库地图
@@ -18,13 +24,13 @@ src/
     底层时间内核。负责仿真时间、事件队列、事件顺序、取消和 clock domain。
 
   modeling/
-    上层建模积木。放可复用的芯片时序建模辅助，例如 TimedResource。
+    上层建模积木。放可复用的芯片时序建模辅助，例如 TimedResource、SimpleCache。
 
 examples/
   完整可运行的小例子。展示用户如何把 TimeEngine 和 modeling 积木用起来。
 
 tests/
-  行为合同。验证事件排序、取消、scheduleCycles、runUntil 等核心语义不能被改坏。
+  行为合同。验证事件排序、取消、scheduleCycles、cache line hit/miss、DRAM 排队等语义不能被改坏。
 
 docs/
   设计文档和用户说明书。解释为什么这样设计，以及用户如何开发自己的芯片时序模型。
@@ -56,6 +62,7 @@ cmake -S . -B build
 cmake --build build
 ctest --test-dir build -C Debug --output-on-failure
 .\build\Debug\mini_memory_system.exe
+.\build\Debug\memory_hierarchy.exe
 ```
 
 ## 文档入口

@@ -23,7 +23,18 @@ target_link_libraries(time_engine_tests PRIVATE time_engine)
 enable_testing()
 add_test(NAME time_engine_tests COMMAND time_engine_tests)
 
+add_executable(memory_modeling_tests
+    tests/memory_modeling_tests.cpp
+)
+target_link_libraries(memory_modeling_tests PRIVATE time_engine)
+add_test(NAME memory_modeling_tests COMMAND memory_modeling_tests)
+
 add_executable(mini_memory_system
     examples/mini_memory_system.cpp
 )
 target_link_libraries(mini_memory_system PRIVATE time_engine)
+
+add_executable(memory_hierarchy
+    examples/memory_hierarchy.cpp
+)
+target_link_libraries(memory_hierarchy PRIVATE time_engine)

@@ -2,6 +2,8 @@
 
 这套文档介绍 CA Chip Simulation Engine 的当前方案。目标是让你能从问题背景开始，一步步读懂：
 
+![Time Engine 顶层设计](assets/overall-design.png)
+
 ```text
 为什么需要 Time Engine
 Time Engine 负责什么
@@ -41,13 +43,15 @@ src/
   |     +-- TimeEngine 内核
   |
   +-- modeling/
-        +-- TimedResource 等建模辅助
+        +-- TimedResource / SimpleCache 等建模辅助
 
 examples/
   +-- mini_memory_system.cpp
+  +-- memory_hierarchy.cpp
 
 tests/
   +-- time_engine_tests.cpp
+  +-- memory_modeling_tests.cpp
 
 docs/
   +-- 01-overview.md
@@ -56,4 +60,6 @@ docs/
   +-- 04-current-mvp.md
   +-- 05-user-manual.md
   +-- 06-roadmap.md
+  +-- assets/
+        +-- 文档配图
 ```

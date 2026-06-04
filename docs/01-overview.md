@@ -4,6 +4,8 @@
 
 CA Chip Simulation Engine 是一个用于芯片性能仿真的时序框架。
 
+![Time Engine 顶层设计](assets/overall-design.png)
+
 它的第一阶段目标不是模拟完整芯片，也不是实现真实 cache、NoC、DRAM 策略，而是先建立一个确定、可测、可解释的时间内核，让后续硬件模型能在同一条仿真时间线上协作。
 
 一句话概括：
@@ -75,8 +77,11 @@ cancel
 run / runUntil
 TraceSink
 TimedResource
+SimpleCache
 mini memory system demo
+memory hierarchy demo
 time engine tests
+memory modeling tests
 ```
 
 ## 当前版本不做什么
@@ -95,4 +100,3 @@ DRAM timing policy
 ```
 
 这些不是被否定，而是要等时间内核和最小 demo 稳定后再逐步加入。
-

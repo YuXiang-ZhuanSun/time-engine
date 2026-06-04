@@ -12,6 +12,10 @@
 
 ## 总览：先建立心智地图
 
+这张顶层设计图先回答“这个项目整体想解决什么、分成哪几层、后续怎么演进”：
+
+![Time Engine 顶层设计](assets/overall-design.png)
+
 ### 一句话理解
 
 ```text
@@ -785,6 +789,153 @@ queued requests
 total wait
 ```
 
+### 进阶例子：读懂 memory_hierarchy
+
+读完 `mini_memory_system.cpp` 后，可以继续读：
+
+```text
+examples/memory_hierarchy.cpp
+```
+
+这个例子比 mini demo 多了四个真实建模元素：
+
+```text
+1. 请求带 address
+2. cache 按 cache line 判断 hit/miss
+3. L1/L2 有不同访问延迟
+4. DRAM port 有带宽限制，多个请求会排队
+```
+
+先看请求对象：
+
+```cpp
+struct MemoryRequest {
+    std::uint64_t id;
+    std::uint64_t address;
+    SimTime issueTime;
+};
+```
+
+这三个字段分别回答：
+
+```text
+id:
+  这是第几条请求，用于 trace 和 stats。
+
+address:
+  请求访问哪个内存地址。cache hit/miss 依赖它。
+
+issueTime:
+  Core 发出请求的时间。请求完成时用 doneTime - issueTime 计算 latency。
+```
+
+再看 cache line。cache 通常不是按单个 byte 判断命中，而是按 cache line 判断命中。
+当前 demo 使用 64B cache line：
+
+```text
+lineAddress = address / 64
+```
+
+所以：
+
+```text
+0x1000 和 0x1008 属于同一个 cache line。
+如果 0x1000 已经回填到 L1，再访问 0x1008 就会 L1 hit。
+```
+
+`SimpleCache` 只做最小 hit/miss 判断：
+
+```cpp
+SimpleCache l1("l1", 64);
+
+if (l1.access(address)) {
+    // hit
+} else {
+    // miss
+}
+```
+
+这里的 `access()` 会更新统计：
+
+```text
+accesses
+hits
+misses
+```
+
+下游返回数据后，用 `fill()` 回填：
+
+```cpp
+l1.fill(address);
+```
+
+`memory_hierarchy.cpp` 的请求路径是：
+
+```text
+Core issue load
+  -> 4 CPU cycles 后访问 L1
+    -> L1 hit: 直接返回 Core
+    -> L1 miss:
+      -> 12 CPU cycles 后访问 L2
+        -> L2 hit: 回填 L1，然后返回 Core
+        -> L2 miss:
+          -> 进入 DRAM port
+            -> DRAM 完成后回填 L2 和 L1
+            -> 返回 Core
+```
+
+这个例子里有五条请求：
+
+```text
+#1 addr=0x1000:
+  第一次访问，L1/L2 都没有，走 DRAM。
+  DRAM 返回后回填 L2 和 L1。
+
+#2 addr=0x1008:
+  和 #1 属于同一个 cache line。
+  因为 #1 已经回填 L1，所以 #2 是 L1 hit。
+
+#3 addr=0x4000:
+  demo 启动前预先把 0x4000 放进 L2。
+  所以 #3 是 L1 miss、L2 hit。
+
+#4 addr=0x8000:
+  新地址，L1/L2 miss，走 DRAM。
+
+#5 addr=0x9000:
+  和 #4 同一时间发出，也是 L1/L2 miss。
+  但 DRAM port 一次只能服务一个请求，所以 #5 会排队。
+```
+
+这正好展示了三种典型路径：
+
+```text
+L1 hit:
+  latency = L1 latency
+
+L1 miss -> L2 hit:
+  latency = L1 latency + L2 latency
+
+L1 miss -> L2 miss -> DRAM:
+  latency = L1 latency + L2 latency + DRAM service + 可能的排队等待
+```
+
+你读这个 example 时，建议按这个顺序读：
+
+```text
+1. MemoryRequest
+2. MemoryHierarchy 构造函数
+3. issueLoad()
+4. accessL1()
+5. accessL2()
+6. completeFromDram()
+7. main() 里五条 load 的安排
+8. 最后的 stats 输出
+```
+
+如果你能手算出 #2 为什么 4000 ps 返回、#5 为什么比 #4 多等 50000 ps，
+说明你已经理解了地址、cache hit/miss、延迟和带宽是如何一起工作的。
+
 ## 第四部分：常见模式和避坑
 
 这一部分回答：写模型时有哪些常用套路，哪些坑要避开？
@@ -958,7 +1109,9 @@ demo 足够小，可以手算预期时间
 3. src/time_engine/time_engine.hpp
 4. tests/time_engine_tests.cpp
 5. src/modeling/timed_resource.hpp
-6. examples/mini_memory_system.cpp
+6. src/modeling/simple_cache.hpp
+7. examples/mini_memory_system.cpp
+8. examples/memory_hierarchy.cpp
 ```
 
 读完后，建议做一个小练习：
