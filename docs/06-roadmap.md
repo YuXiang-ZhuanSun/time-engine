@@ -1,8 +1,8 @@
-# 05. 演进路线
+# 06. 演进路线
 
 ## 演进原则
 
-在扩展代码前，先阅读 [06-user-manual.md](06-user-manual.md)。说明书定义了用户写组件、请求对象、资源模型、trace 和 stats 的推荐方式。
+在扩展代码前，先阅读 [05-user-manual.md](05-user-manual.md)。说明书定义了用户写组件、请求对象、资源模型、trace 和 stats 的推荐方式。
 
 ```text
 先让小例子跑准，再扩大模型。

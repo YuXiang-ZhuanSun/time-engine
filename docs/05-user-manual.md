@@ -1,8 +1,50 @@
-# 06. 用户说明书：开发芯片时序模型
+# 05. 用户说明书：开发芯片时序模型
 
 这份说明书面向 Time Engine 的使用者。目标不是讲抽象架构，而是让你读完后能开始写自己的芯片时序模型。
 
 建议按顺序读。前半部分先解释框架思想和关键概念，后半部分再讲如何写组件、请求、资源、trace 和 stats。
+
+## 0. 先认识这几个词
+
+后面会反复出现一些概念。先用最短的话说明它们，避免读到一半才猜意思。
+
+```text
+仿真时间 SimTime:
+  框架里的全局时间。当前约定单位是 ps。
+
+事件 Event:
+  某个未来时间点要执行的一段动作。
+
+回调 Callback:
+  事件到时间后真正执行的 C++ 函数对象，通常是 lambda。
+
+事件队列 EventQueue:
+  TimeEngine 内部保存未来事件的队列。用户不要直接操作它。
+
+阶段 Phase:
+  同一时间点内的执行通道，用来规定 Input / Compute / Arbitrate / Update / Trace 的先后。
+
+时钟域 ClockDomain:
+  把“几个 cycle 后”转换成全局 SimTime 的对象。
+
+资源 TimedResource:
+  一个会被请求占用一段时间的东西，例如 cache port、NoC link、DRAM port。
+
+trace:
+  事件发生过程的记录，用来解释仿真为什么这样执行。
+
+stats:
+  性能统计，例如 latency、请求数、排队等待时间。
+```
+
+这份说明书的阅读方式是：
+
+```text
+先理解概念
+再看 API
+再看组件模板
+最后照着 demo 写自己的模型
+```
 
 ## 1. Time Engine 是什么
 
@@ -24,7 +66,17 @@ DRAM 在 50000 ps 后返回数据
 Core 被 wakeup
 ```
 
-这些动作都可以变成事件：
+这里先解释两个新词。
+
+```text
+事件:
+  对未来动作的描述。例如“4000 ps 后访问 L2”。
+
+callback:
+  事件到时间后执行的代码。例如真正调用 L2 的函数。
+```
+
+上面的动作都可以变成事件：
 
 ```text
 某个时间点，执行某个 callback。
@@ -83,6 +135,19 @@ Core 是否 stall？
 
 ## 3. Time Engine 的内部结构
 
+这一节会出现 `EventQueue`、`pending_` 和 `sequence`。先解释一下。
+
+```text
+EventQueue:
+  TimeEngine 内部的未来事件队列。它负责找出下一个应该执行的事件。
+
+pending_:
+  TimeEngine 内部的 EventId 到 Event 的索引。它让 cancel(id) 能快速找到事件。
+
+sequence:
+  事件创建顺序。用于在其他排序字段完全相同时保持确定性。
+```
+
 当前 MVP 的核心对象关系如下：
 
 ```text
@@ -103,10 +168,30 @@ TimeEngine
         +-- 可选，用于记录 scheduled / cancelled / executed
 ```
 
-事件进入 TimeEngine 后，会被放进 EventQueue。EventQueue 按稳定规则排序：
+事件进入 TimeEngine 后，会被放进 EventQueue。EventQueue 会用一个固定的“挑选下一个事件”的规则。
+
+这个规则不是让模型开发者每天手动管理四个字段，而是 TimeEngine 内部为了保证可复现性使用的排序键：
 
 ```text
 time -> phase -> priority -> sequence
+```
+
+可以把它读成一句话：
+
+```text
+先看事件发生时间；
+同一时间点内，再看它属于哪个通道；
+同一通道里，除非有特殊需要，否则保持默认优先级；
+最后用创建顺序兜底，保证每次运行结果稳定。
+```
+
+对普通模型开发者来说，最重要的是：
+
+```text
+大多数事件使用 Phase::Update。
+外部输入或初始请求使用 Phase::Input。
+priority 保持默认 0。
+sequence 由 TimeEngine 自动生成，不需要用户管理。
 ```
 
 执行时：
@@ -223,6 +308,14 @@ callback 不应该：
 
 ## 5. `ClockDomain` 是什么
 
+先解释“时钟域”。
+
+```text
+时钟域:
+  使用同一个 clock period 的一组模块。
+  例如 CPU 可能每 1000 ps 一个 cycle，NoC 可能每 500 ps 一个 cycle。
+```
+
 `ClockDomain` 表示一个时钟域。
 
 芯片里的模块不一定都跑在同一个频率下。例如：
@@ -325,7 +418,29 @@ t = 6000 ps
 
 ## 7. `Phase` 是什么
 
-`Phase` 是同一仿真时间点内的阶段顺序。
+先解释为什么需要它。
+
+```text
+如果两个事件都发生在 T=1000 ps，仅靠时间已经分不出谁先执行。
+Phase 就是在同一个时间点里再划分几条固定执行通道。
+```
+
+`Phase` 是**同一仿真时间点内的事件通道**。
+
+它不是硬件里的真实流水级，也不是要求每个模型开发者都精细管理的优先级系统。
+
+可以把它想成 TimeEngine 在同一个时间点里划出的几条固定车道：
+
+```text
+T=1000 ps
+  Input lane
+  Compute lane
+  Arbitrate lane
+  Update lane
+  Trace lane
+```
+
+如果两个事件都发生在 `T=1000 ps`，TimeEngine 会先执行前面车道里的事件，再执行后面车道里的事件。
 
 为什么需要它？
 
@@ -333,7 +448,7 @@ t = 6000 ps
 
 如果没有明确规则，执行顺序可能隐含依赖事件创建顺序，模型会变得难调试。
 
-所以我们把同一时间点拆成几个阶段：
+所以我们把同一时间点拆成几个通道：
 
 ```cpp
 enum class Phase : std::uint8_t {
@@ -349,19 +464,19 @@ enum class Phase : std::uint8_t {
 
 ```text
 Input:
-  接收请求、读取外部输入
+  外部输入进入系统。例如 workload 在 T=0 注入一个 load。
 
 Compute:
-  计算本地决策，例如 hit / miss、路由选择、延迟估计
+  组件做本地计算。例如判断 hit / miss、计算路由、估算延迟。
 
 Arbitrate:
-  解决资源竞争，例如多个请求抢一个 port
+  资源拥有者解决竞争。例如多个请求抢一个 port。
 
 Update:
-  更新状态、完成请求、唤醒上游
+  提交结果。例如更新状态、完成请求、唤醒上游。
 
 Trace:
-  记录最终状态和统计
+  记录最终状态和统计。普通模型代码通常不用这个 phase。
 ```
 
 同一时间点内，执行顺序固定为：
@@ -370,9 +485,62 @@ Trace:
 Input -> Compute -> Arbitrate -> Update -> Trace
 ```
 
-第一版模型可以只用 `Input` 和 `Update`。当模型出现“同一时间点谁先读状态、谁先改状态”的问题时，再更认真地使用 `Compute` 和 `Arbitrate`。
+### 7.1 模型开发者应该怎么选 Phase
+
+第一版请按下面这个简单规则用：
+
+```text
+外部 driver / workload 注入初始请求:
+  用 Phase::Input
+
+普通延迟完成、下游调用、上游 wakeup:
+  用 Phase::Update
+
+资源对象内部做仲裁:
+  资源对象自己用 Phase::Arbitrate
+
+trace / stats 系统记录最终状态:
+  trace / stats 系统自己用 Phase::Trace
+```
+
+也就是说，普通组件开发者大多数时候只需要记住：
+
+```text
+不知道选什么，就用 Phase::Update。
+只有“外部请求进入仿真”的入口事件，用 Phase::Input。
+```
+
+`Compute` 和 `Arbitrate` 是后续更复杂模型使用的工具，不是 MVP 阶段的日常负担。
+
+### 7.2 Phase 不是 priority
+
+`Phase` 解决的是“同一时间点内，不同类型动作的大顺序”。
+
+`priority` 解决的是“同一时间点、同一 phase 内，极少数事件需要显式插队”。
+
+两者不要混用。
+
+推荐策略：
+
+```text
+普通模型:
+  priority 永远保持默认 0
+
+资源模型或框架内部:
+  如果确实需要稳定插队，再使用 priority
+
+如果你发现很多业务逻辑都依赖 priority:
+  说明模型边界可能有问题，应该重新设计 phase 或资源仲裁逻辑
+```
 
 ## 8. 调度接口的共同含义
+
+先解释“调度”。
+
+```text
+调度 schedule:
+  不是立刻执行一个动作，而是把动作登记到未来某个仿真时间点。
+```
 
 TimeEngine 有三个主要调度接口：
 
@@ -428,7 +596,8 @@ callback:
   到时间后真正执行的动作
 
 priority:
-  同一 time、同一 phase 内的显式优先级，数值越小越先执行
+  同一 time、同一 phase 内的显式优先级，数值越小越先执行。
+  普通模型开发者不要主动管理它，保持默认 0。
 
 label:
   给 trace 和调试用的名字，不影响执行逻辑
@@ -767,6 +936,14 @@ engine.scheduleCycles(clock, 4, Phase::Update, [this, request] {
 
 ## 17. 如何表达资源占用
 
+先解释“资源占用”。
+
+```text
+资源占用:
+  某个请求在一段时间内独占或使用一个硬件资源。
+  如果后续请求到来时资源还没释放，后续请求就要等待。
+```
+
 简单资源可以用 `TimedResource`。
 
 ```cpp
@@ -1061,7 +1238,7 @@ demo 足够小，可以手算预期时间
 
 ```text
 1. docs/03-simulation-flow.md
-2. docs/06-user-manual.md
+2. docs/05-user-manual.md
 3. src/time_engine/time_engine.hpp
 4. tests/time_engine_tests.cpp
 5. src/modeling/timed_resource.hpp

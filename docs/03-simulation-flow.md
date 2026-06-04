@@ -18,7 +18,7 @@ callback 执行时可以继续 schedule 新事件。
 
 ## 事件排序
 
-事件按稳定规则排序：
+事件按稳定规则排序。这个规则是 TimeEngine 内部用来挑选“下一个要执行的事件”的，不是要求模型开发者手工管理所有字段：
 
 ```text
 time -> phase -> priority -> sequence
@@ -31,16 +31,18 @@ time:
   仿真时间早的先执行
 
 phase:
-  同一时间点内按阶段执行
+  同一时间点内按事件通道执行。
+  普通模型主要用 Input 和 Update。
 
 priority:
-  同一 phase 内允许显式优先级
+  同一 phase 内允许显式优先级。
+  普通模型保持默认 0，不建议主动管理。
 
 sequence:
   同条件下按创建顺序执行，保证确定性
 ```
 
-当前 phase：
+当前 phase 可以理解成同一时间点内的几条固定通道：
 
 ```text
 Input
@@ -50,7 +52,25 @@ Update
 Trace
 ```
 
-MVP demo 主要用 `Input` 和 `Update`，但 phase 已经为后续 pipeline、resource arbitration 和 trace 留好语义位置。
+MVP demo 主要用 `Input` 和 `Update`。
+
+使用规则：
+
+```text
+外部 workload 注入请求:
+  Phase::Input
+
+普通完成事件、下游调用、上游 wakeup:
+  Phase::Update
+
+资源对象内部仲裁:
+  Phase::Arbitrate
+
+trace / stats 系统记录:
+  Phase::Trace
+```
+
+如果不知道该选哪个 phase，就先选 `Phase::Update`。不要用 `priority` 去弥补模型边界不清的问题。
 
 ## ClockDomain
 
@@ -138,4 +158,3 @@ DRAM requests
 DRAM queued requests
 DRAM total wait
 ```
-

@@ -26,11 +26,11 @@ Time Engine 负责什么
 04-current-mvp
   +-- 当前代码、API、测试和 demo 对照
 
-05-roadmap
-  +-- 后续演进路线
-
-06-user-manual
+05-user-manual
   +-- 面向使用者的模型开发说明书
+
+06-roadmap
+  +-- 后续演进路线
 ```
 
 ## 当前代码结构
@@ -54,6 +54,6 @@ docs/
   +-- 02-architecture.md
   +-- 03-simulation-flow.md
   +-- 04-current-mvp.md
-  +-- 05-roadmap.md
-  +-- 06-user-manual.md
+  +-- 05-user-manual.md
+  +-- 06-roadmap.md
 ```
